@@ -1,0 +1,43 @@
+.github
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+.env.*
+venv/
+.venv/
+*.sqlite3
+*.db
+*.log
+*.pot
+*.pyc
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+/dist
+/build
+/.parcel-cache
+/.turbo
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# JetBrains
+.idea/
+
+# Generated files
+*.bak
+*.tmp
+*.swp
+*.swo
+*~

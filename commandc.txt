@@ -1,0 +1,3 @@
+streamlit run fronend.py
+python app.py
+uvicorn mian:app --reload
