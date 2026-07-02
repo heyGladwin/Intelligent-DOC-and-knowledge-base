@@ -1,20 +1,9 @@
 from flask import Blueprint, request, jsonify
 import os
-import sys
 from google import genai  # Use the new 2026 SDK
 from pymongo import MongoClient
 
-# 1. ROBUST PATH FIX: 
-# This adds the PROJECT ROOT to the path so 'import ML' always works
-ROOT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-if ROOT_PATH not in sys.path:
-    sys.path.append(ROOT_PATH)
-
-try:
-    from ML.utils import generate_embeddings 
-except ImportError:
-    # Fallback if you are running from inside the ML folder
-    from utils import generate_embeddings
+from ML.utils import generate_embeddings
 
 chat_bp = Blueprint('chat_bp', __name__)
 
