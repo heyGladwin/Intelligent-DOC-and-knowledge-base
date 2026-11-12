@@ -2,8 +2,7 @@ from flask import Blueprint, request, jsonify
 import os
 from google import genai  # Use the new 2026 SDK
 from pymongo import MongoClient
-
-from ML.utils import generate_embeddings
+from ML.utils import generate_embedding
 
 chat_bp = Blueprint('chat_bp', __name__)
 
