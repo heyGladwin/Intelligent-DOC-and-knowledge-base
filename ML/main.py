@@ -1,10 +1,9 @@
 import os
 import shutil
-import certifi
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pymongo import MongoClient
+from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv, find_dotenv
 
 # NEW SDK
@@ -14,11 +13,25 @@ from utils import extract_and_chunk_pdf, generate_embeddings
 load_dotenv(find_dotenv())
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# MongoDB Connection
-mongo_uri = os.getenv("MONGO_URI")
-mongo_client = MongoClient(mongo_uri, tlsCAFile=certifi.where())
-db = mongo_client['intelligentDoc']
-collection = db['knowledge_base']
+# ---------------- Pinecone setup ----------------
+INDEX_NAME = os.getenv("PINECONE_INDEX", "intelligent-doc")
+NAMESPACE = "knowledge_base"
+# MUST match your embedding model's output size:
+#   gemini-embedding-001 -> 3072 (default) | text-embedding-004 -> 768
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
+
+pc = Pinecone(api_key=os.getenv("pcsk_RFsSS_63ZNNyxY71qyto1imkae1QaB8WfArkP8pGrRNMCUpLzHFiRWRFvjQcTwcZydsdH"))
+
+if not pc.has_index(INDEX_NAME):
+    pc.create_index(
+        name=INDEX_NAME,
+        dimension=EMBEDDING_DIM,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    )
+
+index = pc.Index(INDEX_NAME)
+# ------------------------------------------------
 
 app = FastAPI()
 
@@ -29,8 +42,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class QuestionRequest(BaseModel):
     question: str
+
 
 @app.post("/upload-knowledge")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -45,31 +60,38 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         vectors = generate_embeddings(chunks)
 
-        # 🚨 THE CRITICAL FIX: Alignment Check
+        # Alignment check
         if len(chunks) != len(vectors):
             raise HTTPException(
-                status_code=500, 
-                detail=f"Mismatch: Got {len(chunks)} chunks but only {len(vectors)} vectors."
+                status_code=500,
+                detail=f"Mismatch: Got {len(chunks)} chunks but only {len(vectors)} vectors.",
             )
 
-        documents = [
+        # Deterministic IDs: re-uploading the same file overwrites instead of duplicating
+        records = [
             {
-                "source": file.filename,
-                "content": chunks[i],
-                "embedding": vectors[i]
+                "id": f"{file.filename}-{i}",
+                "values": vectors[i],
+                "metadata": {"source": file.filename, "content": chunks[i]},
             }
             for i in range(len(chunks))
         ]
 
-        collection.insert_many(documents)
+        # Upsert in batches (Pinecone recommends ~100 records per request)
+        for start in range(0, len(records), 100):
+            index.upsert(vectors=records[start:start + 100], namespace=NAMESPACE)
+
         return {"status": "success", "message": f"Indexed {len(chunks)} sections."}
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Upload Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
 
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
@@ -78,34 +100,39 @@ async def ask_question(request: QuestionRequest):
         query_embeddings = generate_embeddings([request.question])
         if not query_embeddings:
             return {"answer": "Error generating embedding for your question."}
-        
+
         query_vector = query_embeddings[0]
 
-        # Vector Search
-        pipeline = [
-            {"$vectorSearch": {
-                "index": "vector_index",
-                "path": "embedding",
-                "queryVector": query_vector,
-                "numCandidates": 10,
-                "limit": 3
-            }},
-            {"$project": {"_id": 0, "content": 1}}
-        ]
-        
-        results = list(collection.aggregate(pipeline))
-        context = "\n\n".join([res['content'] for res in results])
+        # Vector search
+        results = index.query(
+            vector=query_vector,
+            top_k=3,
+            include_metadata=True,
+            namespace=NAMESPACE,
+        )
+        MIN_SCORE = 0.5  # tune this by testing
 
-        # Generate Response
+        matches = [m for m in results.matches if m.score >= MIN_SCORE]
+        if not matches:
+            return {
+        "answer": "I couldn't find anything relevant in the uploaded documents.",
+        "sources": []
+        }
+
+        sources = [m.metadata["content"] for m in results.matches]
+        context = "\n\n".join(sources)
+
+        # Generate response
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=f"Use this context to answer: {context}\n\nQuestion: {request.question}"
+            contents=f"Use this context to answer: {context}\n\nQuestion: {request.question}",
         )
 
-        return {"answer": response.text, "sources": [res['content'] for res in results]}
+        return {"answer": response.text, "sources": sources}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
 @app.get("/")
 async def root():
     return {"message": "AI Document API is running!"}

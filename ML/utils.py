@@ -7,17 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 1. SSL Fix
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
-
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-def generate_embeddings(text_list):
+def generate_embeddings(text_list,task_type="RETRIEVAL_DOCUMENT"):
     """
     Converts text chunks into vectors.
     Model: gemini-embedding-001 (New 2026 Stable Standard)
@@ -34,11 +26,11 @@ def generate_embeddings(text_list):
             
             # UPDATED MODEL NAME AND CONFIG
             result = client.models.embed_content(
-                model="gemini-embedding-001", 
+                model="gemini-embedding-2", 
                 contents=batch,
                 config=types.EmbedContentConfig(
-                    task_type="RETRIEVAL_DOCUMENT",
-                    output_dimensionality=768  # Forces 768 dimensions
+                    task_type=task_type,
+                    output_dimensionality=3072 
                 )
             )
             
