@@ -1,32 +1,22 @@
-from flask import Flask, jsonify
-from flask_cors import CORS
-from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-# Load .env before importing routes
-load_dotenv()
+from api.routes.chat_routes import router as chat_router
+from api.routes.document_routes import router as document_router
 
-from routes.chat_routes import chat_bp
-from routes.document_routes import document_bp
+app = FastAPI(title="AI Document API")
 
-def create_app():
-    app = Flask(__name__)
-    CORS(app)  # Allows Streamlit app to talk to this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # replace with your frontend URL before deploying
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # Register the different parts of our app
-    app.register_blueprint(chat_bp, url_prefix="/api/chat")
-    app.register_blueprint(document_bp, url_prefix="/api/document")
+app.include_router(document_router)
+app.include_router(chat_router)
 
-    @app.route('/')
-    def health_check():
-        return jsonify({
-            "status": "Backend is Online", 
-            "version": "2026.1",
-            "port": 5000
-        })
 
-    return app
-
-if __name__ == "__main__":
-    app = create_app()
-    # Debug=True means it auto-restarts when you save changes
-    app.run(debug=True, port=5000)
+@app.get("/")
+def root():
+    return {"message": "AI Document API is running!"}

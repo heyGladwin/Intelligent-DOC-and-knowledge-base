@@ -1,59 +1,22 @@
-from flask import Blueprint, request, jsonify
-import os
-from google import genai  # Use the new 2026 SDK
-from pymongo import MongoClient
-from ML.utils import generate_embedding
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-chat_bp = Blueprint('chat_bp', __name__)
+from ML.retrieval import answer
 
-# 2. 2026 CLIENT INITIALIZATION
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+router = APIRouter()
 
-# 3. MONGODB CONNECTION
-mongo_client = MongoClient(os.getenv("MONGO_URI"))
-db = mongo_client['intelligentDoc']
-collection = db['knowledge_base']
 
-@chat_bp.route('/ask', methods=['POST'])
-def ask():
+class QuestionRequest(BaseModel):
+    question: str
+
+
+@router.post("/ask")
+def ask(request: QuestionRequest):  # plain def: runs in a thread, since the pipeline blocks
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Missing 'question' in request body")
     try:
-        data = request.json
-        user_query = data.get("question")
-
-        # 4. VECTORIZE
-        # generate_embeddings now returns 768-dim vectors
-        embeddings = generate_embeddings([user_query])
-        if not embeddings:
-            return jsonify({"error": "Failed to generate embeddings"}), 500
-        
-        query_vector = embeddings[0]
-
-        # 5. VECTOR SEARCH (Atlas)
-        pipeline = [
-            {"$vectorSearch": {
-                "index": "vector_index",
-                "path": "embedding",
-                "queryVector": query_vector,
-                "numCandidates": 10,
-                "limit": 3
-            }},
-            {"$project": {"_id": 0, "content": 1}}
-        ]
-        
-        docs = list(collection.aggregate(pipeline))
-        context = "\n\n".join([d['content'] for d in docs])
-
-        # 6. GENERATE ANSWER (Gemini 2.5 Flash)
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=f"Context: {context}\n\nQuestion: {user_query}"
-        )
-
-        return jsonify({
-            "answer": response.text,
-            "sources": [d['content'] for d in docs]
-        })
-
+        return answer(question)
     except Exception as e:
         print(f"Server Error: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))

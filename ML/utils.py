@@ -1,5 +1,4 @@
 import os
-import ssl
 from pypdf import PdfReader
 from google import genai
 from google.genai import types
@@ -9,39 +8,37 @@ load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-def generate_embeddings(text_list,task_type="RETRIEVAL_DOCUMENT"):
-    """
-    Converts text chunks into vectors.
-    Model: gemini-embedding-001 (New 2026 Stable Standard)
-    """
+def generate_embeddings(text_list, task_type="RETRIEVAL_DOCUMENT"):
     if not text_list:
         return []
-    
+
     all_embeddings = []
-    batch_size = 50 # Smaller batches are safer in 2026
-    
+    batch_size = 50
+
     try:
         for i in range(0, len(text_list), batch_size):
             batch = text_list[i : i + batch_size]
-            
-            # UPDATED MODEL NAME AND CONFIG
+
             result = client.models.embed_content(
-                model="gemini-embedding-2", 
-                contents=batch,
+                model="gemini-embedding-2",
+                # One Content object per chunk -> one embedding per chunk
+                contents=[
+                    types.Content(parts=[types.Part(text=t)]) for t in batch
+                ],
                 config=types.EmbedContentConfig(
                     task_type=task_type,
-                    output_dimensionality=3072 
-                )
+                    output_dimensionality=3072,
+                ),
             )
-            
+
             if result.embeddings:
                 all_embeddings.extend([e.values for e in result.embeddings])
-            
+
         return all_embeddings
     except Exception as e:
         print(f"❌ Embedding Error: {e}")
         return []
-
+    
 def extract_and_chunk_pdf(pdf_path, chunk_size=1000, chunk_overlap=200):
     """
     Cleanly extracts text and creates overlapping chunks to prevent context loss.
