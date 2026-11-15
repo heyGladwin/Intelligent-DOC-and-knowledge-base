@@ -4,15 +4,6 @@
 
 A full-stack Retrieval-Augmented Generation (RAG) application. Upload PDF documents, build a semantic vector knowledge base from the content, and ask natural language questions — with source attribution so you always know where the answer came from.
 
----
-
-## Demo
-
-![Demo](https://placehold.co/800x400?text=Add+a+screenshot+or+GIF+here)
-
-> Record a 30-second GIF of the app working and drop it here.
-
----
 
 ## Features
 

@@ -42,3 +42,5 @@ pnpm-debug.log*
 *.swo
 *~
 pyvenv.cfg
+certs
+

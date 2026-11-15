@@ -1,3 +1,4 @@
-from utils import generate_embeddings
-vecs = generate_embeddings(["one", "two", "three" , "four"])
-print(len(vecs), [len(v) for v in vecs])
+import graph_store
+
+graph_store.init_graph()
+graph_store.close_graph()
