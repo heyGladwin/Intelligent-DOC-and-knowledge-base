@@ -12,7 +12,7 @@ import os
 import math
 from pinecone import Pinecone, ServerlessSpec
 from google import genai
-
+from ML import memory
 from ML.utils import generate_embeddings
 
 # ---------------- CONFIG ----------------
@@ -140,26 +140,48 @@ def retrieve(question):
     return [m.metadata["content"] for m in top]
 
 
-def answer(question):
-    """Retrieve, then generate. Returns a dict ready to jsonify."""
+def answer(question, user_id="default"):
+    """Retrieve, recall memory, generate, then save anything new about the user."""
     chunks = retrieve(question)
+    memories = memory.recall(index, user_id, question)
 
     if not chunks:
         return {
             "answer": "I couldn't find anything relevant in the uploaded documents.",
             "sources": [],
+            "memories_used": memories,
         }
 
     context = "\n\n".join(chunks)
+    memory_section = ""
+    if memories:
+        memory_section = (
+            "Known about this user (background only; the documents are the source of truth):\n"
+            + "\n".join(f"- {m}" for m in memories)
+            + "\n\n"
+        )
+
     response = llm.models.generate_content(
         model=ANSWER_MODEL,
         contents=(
             "Answer the question using only the context below. "
             "If the context doesn't contain the answer, say you don't know.\n\n"
+            f"{memory_section}"
             f"Context:\n{context}\n\nQuestion: {question}"
         ),
     )
-    return {"answer": response.text, "sources": chunks}
+
+    # Save after answering. A memory failure must never break the answer.
+    try:
+        memory.save(index, llm, user_id, question, response.text)
+    except Exception as e:
+        print(f"⚠️ Memory save failed: {e}")
+
+    return {
+        "answer": response.text,
+        "sources": chunks,
+        "memories_used": memories,
+    }
 def index_chunks(filename, chunks):
     """Embed chunks (dense + sparse) and upsert them into Pinecone."""
     dense_vectors = generate_embeddings(chunks)  # RETRIEVAL_DOCUMENT by default
