@@ -15,31 +15,32 @@ Functions used by ML/retrieval.py:
 import os
 import re
 import json
+import certifi
 from collections import Counter
 from neo4j import GraphDatabase, TrustCustomCAs
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from google.genai import types
+import time
+
 
 
 load_dotenv()
 NEO4J_URI = os.getenv("NEO4J_URI").replace("neo4j+s://", "neo4j://")
 NEO4J_USER = os.getenv("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
-EXTRACT_MODEL = "gemini-2.5-flash"
-
-
+EXTRACT_MODEL = "gemini-3.5-flash-lite"
 
 driver = GraphDatabase.driver(
     NEO4J_URI,
     auth=(NEO4J_USER, NEO4J_PASSWORD),
     encrypted=True,
-    trusted_certificates=TrustCustomCAs("certs/neo4j-root.cer"),
+    trusted_certificates=TrustCustomCAs(certifi.where()),
 )
-
 # ---------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------
+
 def init_graph():
     """Check the connection and make entity names unique."""
     driver.verify_connectivity()
@@ -75,16 +76,36 @@ EXTRACT_PROMPT = (
 )
 
 
+EXTRACT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash"]  # first choice, then fallback
+RETRY_WAITS = [2, 5, 10]  # seconds between attempts
+def _generate_with_retry(client, prompt):
+    """Retry busy-model errors (429/503), then try the fallback model."""
+    last_error = None
+    for model in EXTRACT_MODELS:
+        for wait in [0] + RETRY_WAITS:
+            if wait:
+                time.sleep(wait)
+            try:
+                return client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0,
+                    ),
+                )
+            except Exception as e:
+                last_error = e
+                msg = str(e)
+                if "503" in msg or "429" in msg or "UNAVAILABLE" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    continue  # temporary: wait and try again
+                raise  # anything else (bad key, bad request) fails immediately
+    raise last_error
+
+
 def extract_triples(client, chunk):
     """Ask Gemini for (subject, relation, object) triples from one chunk."""
-    response = client.models.generate_content(
-        model=EXTRACT_MODEL,
-        contents=EXTRACT_PROMPT + chunk,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0,
-        ),
-    )
+    response = _generate_with_retry(client, EXTRACT_PROMPT + chunk)
     data = json.loads(response.text)
     clean = []
     if isinstance(data, list):

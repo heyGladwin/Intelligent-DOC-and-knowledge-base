@@ -14,7 +14,7 @@ from pinecone import Pinecone, ServerlessSpec
 from google import genai
 from ML import memory
 from ML.utils import generate_embeddings
-
+from ML import graph_store
 # ---------------- CONFIG ----------------
 INDEX_NAME = os.getenv("PINECONE_INDEX", "intelligent-doc-hybrid")
 NAMESPACE = "knowledge_base"
@@ -22,7 +22,7 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
 
 SPARSE_MODEL = "pinecone-sparse-english-v0"
 RERANK_MODEL = "bge-reranker-v2-m3"
-ANSWER_MODEL = "gemini-2.5-flash"
+ANSWER_MODEL = "gemini-3.5-flash-lite"
 
 CANDIDATES_PER_SEARCH = 20  # chunks returned by each search, input to RRF
 RRF_K = 60                  # standard RRF smoothing constant
@@ -44,8 +44,13 @@ if not pc.has_index(INDEX_NAME):
 
 index = pc.Index(INDEX_NAME)
 # -----------------------------------------
-
-
+GRAPH_HOPS = 1  # 2 follows chains across documents, but returns more facts
+GRAPH_ENABLED = True
+try:
+    graph_store.init_graph()
+except Exception as e:
+    GRAPH_ENABLED = False
+    print(f"⚠️ Neo4j unavailable, graph disabled: {e}")
 # ---------------- HELPERS ----------------
 def normalize(vec):
     """Scale to length 1 so dot product == cosine similarity."""
@@ -73,6 +78,7 @@ def generate_sparse(texts, input_type):
                 "values": list(_get(e, "sparse_values")),
             })
     return out
+
 
 
 def reciprocal_rank_fusion(rankings, k=RRF_K):
@@ -133,32 +139,55 @@ def retrieve(question):
             rankings.append(sparse_results.matches)
         except Exception as e:
             print(f"⚠️ Sparse search failed, continuing with dense only: {e}")
-
+        # 3. Graph: entities in the question -> linked chunks (third ranking) + facts 
+    
+    graph_facts = []
+    if GRAPH_ENABLED:
+        try:
+            graph_ids, graph_facts = graph_store.graph_lookup(question, hops=GRAPH_HOPS)
+            ids = graph_ids[:CANDIDATES_PER_SEARCH]
+            if ids:
+                fetched = index.fetch(ids=ids, namespace=NAMESPACE)
+                graph_matches = [fetched.vectors[cid] for cid in ids if cid in fetched.vectors]
+                if graph_matches:
+                    rankings.append(graph_matches)
+        except Exception as e:
+            print(f"⚠️ Graph lookup failed, continuing without it: {e}")
+            
     # 3. RRF + 4. Rerank
     fused = reciprocal_rank_fusion(rankings)
     top = rerank_chunks(question, fused[:RERANK_INPUT], FINAL_TOP_N)
-    return [m.metadata["content"] for m in top]
+    return [m.metadata["content"] for m in top], graph_facts        
 
 
+import time
 def answer(question, user_id="default"):
-    """Retrieve, recall memory, generate, then save anything new about the user."""
-    chunks = retrieve(question)
+    t0 = time.perf_counter()
+    chunks, graph_facts = retrieve(question)  # retrieve() now returns two values
+    t1 = time.perf_counter()
     memories = memory.recall(index, user_id, question)
+    t2 = time.perf_counter()
 
     if not chunks:
         return {
             "answer": "I couldn't find anything relevant in the uploaded documents.",
             "sources": [],
             "memories_used": memories,
+            "graph_facts": [],
         }
 
     context = "\n\n".join(chunks)
+
+    # Relations from Neo4j (empty if the graph is off or nothing matched)
+    graph_section = ""
+    if graph_facts:
+        graph_section = "Known relationships:\n" + "\n".join(graph_facts) + "\n\n"
+
     memory_section = ""
     if memories:
         memory_section = (
             "Known about this user (background only; the documents are the source of truth):\n"
-            + "\n".join(f"- {m}" for m in memories)
-            + "\n\n"
+            + "\n".join(f"- {m}" for m in memories) + "\n\n"
         )
 
     response = llm.models.generate_content(
@@ -166,21 +195,24 @@ def answer(question, user_id="default"):
         contents=(
             "Answer the question using only the context below. "
             "If the context doesn't contain the answer, say you don't know.\n\n"
-            f"{memory_section}"
-            f"Context:\n{context}\n\nQuestion: {question}"
+            f"{graph_section}{memory_section}Context:\n{context}\n\nQuestion: {question}"
         ),
     )
+    t3 = time.perf_counter()
 
-    # Save after answering. A memory failure must never break the answer.
     try:
         memory.save(index, llm, user_id, question, response.text)
     except Exception as e:
         print(f"⚠️ Memory save failed: {e}")
+    t4 = time.perf_counter()
 
+    print(f"⏱ retrieve={t1-t0:.1f}s recall={t2-t1:.1f}s "
+          f"generate={t3-t2:.1f}s save={t4-t3:.1f}s")
     return {
         "answer": response.text,
         "sources": chunks,
         "memories_used": memories,
+        "graph_facts": graph_facts,
     }
 def index_chunks(filename, chunks):
     """Embed chunks (dense + sparse) and upsert them into Pinecone."""

@@ -14,7 +14,7 @@ from google.genai import types
 from ML.utils import generate_embeddings
 
 MEMORY_NAMESPACE = "user_memory"
-EXTRACT_MODEL = "gemini-2.5-flash"
+EXTRACT_MODEL = "gemini-3.5-flash-lite"
 TOP_K = 3
 MIN_SCORE = 0.35  # cosine-like score; tune by testing real questions
 

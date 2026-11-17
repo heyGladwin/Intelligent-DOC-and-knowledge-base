@@ -1,215 +1,129 @@
-# RAG Document Intelligence System
+# AI Document Q&A (Hybrid RAG + Knowledge Graph + Memory)
 
-> Upload a PDF. Ask questions. Get answers grounded in your document.
-
-A full-stack Retrieval-Augmented Generation (RAG) application. Upload PDF documents, build a semantic vector knowledge base from the content, and ask natural language questions — with source attribution so you always know where the answer came from.
-
+Upload PDFs and ask questions about them. Answers come only from your documents, using hybrid search, reranking, an entity-relation graph, and long-term memory per user.
 
 ## Features
 
-- Upload PDF documents and extract text automatically
-- Chunk and embed document content using Google Generative AI (768-dimensional embeddings)
-- Semantic search via cosine similarity with MongoDB Atlas Vector Search
-- Ask questions in natural language and get contextual answers
-- Source attribution — every answer tells you which part of the document it came from
-- Out-of-scope detection — clearly tells you when a question can't be answered from the document
+- **Hybrid search:** dense embeddings (meaning) and sparse vectors (exact keywords) stored in one Pinecone index
+- **Reciprocal Rank Fusion (RRF):** merges the dense, sparse and graph rankings by rank position
+- **Reranking:** a cross-encoder (`bge-reranker-v2-m3`) re-scores the top 20 candidates and keeps the best 5
+- **Knowledge graph (Neo4j):** entity relations extracted from each chunk, used to connect facts across documents
+- **Long-term memory:** remembers durable facts and preferences per user, stored separately from documents
+- **Grounded answers:** Gemini answers only from the retrieved context and says when it doesn't know
 
----
-
-## Architecture
+## How it works
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  React/Vite │────▶│  Flask API   │────▶│ FastAPI ML      │
-│  Frontend   │     │  Port 5000   │     │ Service         │
-│  Port 5173  │     │  (routing +  │     │ Port 8000       │
-└─────────────┘     │   sessions)  │     │ (embeddings +   │
-                    └──────────────┘     │  retrieval)     │
-                                         └────────┬────────┘
-                                                  │
-                                         ┌────────▼────────┐
-                                         │  MongoDB Atlas  │
-                                         │  Vector Search  │
-                                         └─────────────────┘
+UPLOAD  POST /upload-knowledge
+  PDF -> text chunks (1000 chars, 200 overlap)
+      -> dense embedding (Gemini) + sparse embedding (Pinecone) -> Pinecone "knowledge_base"
+      -> entity relations (Gemini)                               -> Neo4j
+
+ASK     POST /ask
+  question -> dense search   (top 20)  \
+           -> sparse search  (top 20)   }-> RRF -> rerank -> top 5 chunks
+           -> graph lookup   (linked)  /
+           -> user memories  (Pinecone "user_memory")
+           -> Gemini answer (chunks + relationships + memories)
+           -> new facts about the user saved to memory
 ```
 
-**Why two backends?**
-Flask handles HTTP routing, session management, and request orchestration — things it does cleanly and simply. FastAPI runs the ML workload (PDF parsing, embedding generation, vector retrieval) where async performance and automatic OpenAPI docs matter. Separating them means the ML service can be scaled or swapped independently.
+## Tech stack
 
----
-
-## Tech Stack
-
-| Layer | Technology |
+| Part | Technology |
 |---|---|
-| Frontend | React, Vite, Tailwind CSS |
-| API Layer | Flask (Python) |
-| ML Service | FastAPI, PyPDF |
-| Embeddings + LLM | Google Generative AI |
-| Vector Database | MongoDB Atlas Vector Search |
+| API | FastAPI, Uvicorn |
+| Vector database | Pinecone (serverless, `dotproduct`, 3072 dims) |
+| Graph database | Neo4j AuraDB |
+| Embeddings | `gemini-embedding-2` (dense), `pinecone-sparse-english-v0` (sparse) |
+| Reranker | `bge-reranker-v2-m3` (Pinecone hosted) |
+| LLM | Gemini (answer model set in `ML/retrieval.py`) |
+| PDF parsing | pypdf |
 
----
-
-## Project Structure
+## Project structure
 
 ```
-rag-document-intelligence/
-├── api/                  # Flask backend — chat and upload endpoints
-│   └── app.py
-├── ML/                   # FastAPI ML service — PDF processing and retrieval
-│   └── main.py
-├── frontend/             # React + Vite UI
-│   ├── src/
-│   └── package.json
-├── .env.example          # Environment variable template
-└── requirement.txt       # Python dependencies
+Rag/
+├── api/
+│   ├── app.py                  # FastAPI app, CORS, routers
+│   └── routes/
+│       ├── document_routes.py  # POST /upload-knowledge
+│       └── chat_routes.py      # POST /ask, GET/DELETE /memory/{user_id}
+├── ML/
+│   ├── utils.py                # PDF chunking, Gemini embeddings
+│   ├── retrieval.py            # hybrid search, RRF, rerank, answer generation
+│   ├── graph_store.py          # Neo4j entity relations
+│   └── memory.py               # long-term user memory
+├── frontend/
+├── requirement.txt
+└── .env                        # not committed
 ```
-
----
-
-## Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- A [MongoDB Atlas](https://www.mongodb.com/atlas) account with Vector Search enabled
-- A [Google AI API key](https://makersuite.google.com/app/apikey)
-
----
 
 ## Setup
 
-### 1. Clone the repository
+**1. Create a virtual environment (Python 3.12 recommended)**
 
-```bash
-git clone https://github.com/yourusername/rag-document-intelligence.git
-cd rag-document-intelligence
-```
-
-### 2. Configure environment variables
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and fill in your credentials:
-
-```env
-GOOGLE_API_KEY=your_google_api_key_here
-MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/intelligentDoc?retryWrites=true&w=majority
-```
-
-### 3. Install Python dependencies
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # On Windows: .\.venv\Scripts\Activate.ps1
+```powershell
+py -3.12 -m venv .venv312
+.venv312\Scripts\activate
 pip install -r requirement.txt
 ```
 
-### 4. Install frontend dependencies
+**2. Create `.env` in the project root**
 
-```bash
-cd frontend
-npm install
+```
+GOOGLE_API_KEY=your_gemini_key
+PINECONE_API_KEY=your_pinecone_key
+NEO4J_URI=neo4j+s://xxxxxxxx.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your_neo4j_password
 ```
 
----
+Optional: `PINECONE_INDEX` (default `intelligent-doc-hybrid`), `EMBEDDING_DIM` (default `3072`).
 
-## Running the App
+The Pinecone index is created automatically on first start. Never commit `.env`.
 
-Open three terminal windows:
+**3. Run the API (from the project root)**
 
-**Terminal 1 — Flask API**
-```bash
-cd api
-python app.py
-# Runs on http://localhost:5000
+```powershell
+uvicorn api.app:app --reload
 ```
 
-**Terminal 2 — FastAPI ML Service**
-```bash
-cd ML
-uvicorn main:app --reload --port 8000
-# Runs on http://localhost:8000
-```
+Open http://127.0.0.1:8000/docs to try every endpoint in the browser.
 
-**Terminal 3 — Frontend**
-```bash
-cd frontend
-npm run dev
-# Runs on http://localhost:5173
-```
+## API
 
-Then open [http://localhost:5173](http://localhost:5173) in your browser.
+| Method | Endpoint | Body / params | Returns |
+|---|---|---|---|
+| GET | `/` | none | health message |
+| POST | `/upload-knowledge` | form field `file` (PDF) | sections indexed, relations stored, `graph` status |
+| POST | `/ask` | `{"question": "...", "user_id": "alice"}` | `answer`, `sources`, `graph_facts`, `memories_used` |
+| GET | `/memory/{user_id}` | none | stored memories for that user |
+| DELETE | `/memory/{user_id}` | none | number of memories deleted |
 
----
+`user_id` is optional and defaults to `default`, which is shared by everyone who omits it. Use a real user ID in production.
 
-## API Reference
+## Behaviour notes
 
-### Flask API (`localhost:5000`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/document/upload-knowledge` | Upload and index a PDF |
-| `POST` | `/api/chat/ask` | Ask a question about uploaded documents |
-
-### FastAPI ML Service (`localhost:8000`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/upload-knowledge` | Parse PDF, generate embeddings, store in MongoDB |
-| `POST` | `/ask` | Retrieve relevant chunks and generate an answer |
-
-Interactive API docs available at [http://localhost:8000/docs](http://localhost:8000/docs) when the ML service is running.
-
----
-
-## MongoDB Atlas Setup
-
-1. Create a free cluster at [mongodb.com/atlas](https://www.mongodb.com/atlas)
-2. Enable **Vector Search** on your cluster
-3. Create a vector index named `vector_index` on the `embedding` field with dimension `768` and similarity `cosine`
-4. Add your connection string to `.env`
-
----
-
-## Environment Variables
-
-| Variable | Description |
-|---|---|
-| `GOOGLE_API_KEY` | Google Generative AI API key for embeddings and LLM |
-| `MONGO_URI` | MongoDB Atlas connection string |
-
-Never commit your `.env` file. It is already in `.gitignore`.
-
----
+- **Re-uploading a file** overwrites its chunks (IDs are `<filename>-<index>`) and replaces its graph relations.
+- **The graph is optional.** If Neo4j can't connect at startup, the app prints a warning and runs without it. Upload returns `"graph": "disabled"`.
+- **Fallbacks:** if sparse search or reranking fails, the request continues with a simpler ranking and prints a `⚠️` line.
+- **Busy models:** graph extraction retries `503`/`429` errors with backoff, then tries a fallback model. A chunk that still fails is skipped.
+- **Graph matching is by exact entity name** (after lowercasing and removing punctuation), so "Alice Chen" and "Alice" are different entities.
 
 ## Troubleshooting
 
-**`Authentication failed` on MongoDB connection**
-Check your username and password in the `MONGO_URI`. Special characters in passwords must be URL-encoded.
-
-**`API key not valid` from Google AI**
-Make sure your key is enabled for the Generative Language API in Google Cloud Console.
-
-**Vector search returns no results**
-Confirm the index name is exactly `vector_index` and the field name is `embedding`. Index creation can take a few minutes after setup.
-
-**PDF not parsing correctly**
-VaultAI currently extracts text from standard PDFs. PDFs that consist entirely of scanned images (no text layer) will not parse correctly — OCR support is on the roadmap.
-
----
+| Problem | Fix |
+|---|---|
+| `ModuleNotFoundError: ML` or `api` | Run commands from the project root |
+| `Vector dimension ... does not match` | Embeddings must be 3072 dims; recreate the index if it was made with another size |
+| Neo4j `SSLCertVerificationError` | The driver trusts `certifi`'s CA list via `TrustCustomCAs(certifi.where())` with `neo4j://` and `encrypted=True` |
+| Neo4j `AuthError` | Wrong password: Aura console → ⋯ → Recover Database Credentials |
+| Very slow answers | Use a faster answer model or lower its thinking level |
+| `pydantic-core` build fails | Use Python 3.12, or don't pin pydantic |
 
 ## Roadmap
 
-- [ ] Docker + docker-compose for one-command startup
-- [ ] OCR support for scanned PDFs
-- [ ] Multi-document support (query across multiple uploaded files)
-- [ ] Streaming responses
-- [ ] Authentication and per-user document isolation
-
----
-
-## License
-
-MIT
+- [x] Hybrid search, RRF, reranking
+- [x] Neo4j entity-relation graph
+- [x] Long-term user memory
