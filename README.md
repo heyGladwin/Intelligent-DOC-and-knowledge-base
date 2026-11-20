@@ -54,7 +54,7 @@ Rag/
 │   ├── retrieval.py            # hybrid search, RRF, rerank, answer generation
 │   ├── graph_store.py          # Neo4j entity relations
 │   └── memory.py               # long-term user memory
-├── frontend/
+├── frontend.py                 # Streamlit UI (upload + chat)
 ├── requirement.txt
 └── .env                        # not committed
 ```
@@ -90,6 +90,12 @@ uvicorn api.app:app --reload
 ```
 
 Open http://127.0.0.1:8000/docs to try every endpoint in the browser.
+
+**4. Run the UI (in a second terminal, from the project root)**
+
+```powershell
+streamlit run frontend.py
+```
 
 ## API
 

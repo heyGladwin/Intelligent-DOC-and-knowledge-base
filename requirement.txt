@@ -6,3 +6,5 @@ google-genai
 pypdf
 pinecone
 neo4j
+streamlit
+requests

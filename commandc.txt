@@ -1,3 +1,2 @@
-streamlit run fronend.py
-python app.py
-uvicorn mian:app --reload
+uvicorn api.app:app --reload
+streamlit run frontend.py

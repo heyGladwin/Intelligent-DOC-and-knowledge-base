@@ -17,13 +17,10 @@ import re
 import json
 import certifi
 from collections import Counter
+import time
 from neo4j import GraphDatabase, TrustCustomCAs
 from dotenv import load_dotenv
-from neo4j import GraphDatabase
 from google.genai import types
-import time
-
-
 
 load_dotenv()
 NEO4J_URI = os.getenv("NEO4J_URI").replace("neo4j+s://", "neo4j://")

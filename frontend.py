@@ -1,6 +1,15 @@
-import streamlit as st
 import requests
-import base64
+import streamlit as st
+
+API_URL = "http://127.0.0.1:8000"
+
+
+def error_detail(res):
+    """Return the backend's error message, or the HTTP status if there isn't one."""
+    try:
+        return res.json().get("detail", res.status_code)
+    except ValueError:
+        return res.status_code
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Nexus AI", page_icon="🌐", layout="wide")
@@ -19,7 +28,7 @@ def local_css():
             background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
             color: #ffffff;
         }
-        
+
         /* Floating Sidebar */
         [data-testid="stSidebar"] {
             background-color: rgba(255, 255, 255, 0.05) !important;
@@ -68,27 +77,34 @@ local_css()
 with st.sidebar:
     st.markdown("<h2 style='text-align: center;'>🌐 NEXUS</h2>", unsafe_allow_html=True)
     st.markdown("---")
-    
+
     with st.container():
         st.markdown("### 📥 Source Ingestion")
         uploaded_file = st.file_uploader("Upload PDF Knowledge", type="pdf", label_visibility="collapsed")
-        
+
         if st.button("PROPELLANT INDEX"):
-            if uploaded_file:
+            if not uploaded_file:
+                st.warning("Choose a PDF first.")
+            else:
                 with st.status("Analyzing Synapses...", expanded=True) as status:
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-                    res = requests.post("http://127.0.0.1:8000/upload-knowledge", files=files)
-                    if res.status_code == 200:
-                        status.update(label="Index Complete!", state="complete", expanded=False)
-                        st.success("Knowledge Integrated.")
-                    else:
+                    try:
+                        res = requests.post(f"{API_URL}/upload-knowledge", files=files, timeout=600)
+                    except requests.RequestException:
                         status.update(label="Transmission Failed", state="error")
-    
+                        st.error(f"Can't reach the backend at {API_URL}. Is uvicorn running?")
+                    else:
+                        if res.ok:
+                            status.update(label="Index Complete!", state="complete", expanded=False)
+                            st.success(res.json().get("message", "Knowledge Integrated."))
+                        else:
+                            status.update(label="Transmission Failed", state="error")
+                            st.error(f"Upload failed: {error_detail(res)}")
+
     st.divider()
     st.markdown("### ⚙️ Engine Specs")
-    st.caption("Model: Gemini 2.5 Flash")
-    st.caption("Vector Dim: 768")
-    st.caption("Latency: < 200ms")
+    st.caption("Search: dense + sparse + graph, reranked")
+    st.caption("Vector Dim: 3072")
 
 # --- MAIN CONTENT: AERO WORKSPACE ---
 col_space, col_main, col_space2 = st.columns([1, 4, 1])
@@ -102,8 +118,7 @@ with col_main:
         st.session_state.messages = []
 
     # Display History
-    chat_container = st.container()
-    with chat_container:
+    with st.container():
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
@@ -116,19 +131,24 @@ with col_main:
 
         with st.chat_message("assistant"):
             with st.spinner("Decoding latent space..."):
-                response = requests.post("http://127.0.0.1:8000/ask", json={"question": prompt})
-                if response.status_code == 200:
+                try:
+                    response = requests.post(f"{API_URL}/ask", json={"question": prompt}, timeout=300)
+                except requests.RequestException:
+                    response = None
+                    st.error(f"Can't reach the backend at {API_URL}. Is uvicorn running?")
+
+                if response is not None and response.ok:
                     data = response.json()
                     answer = data["answer"]
                     sources = data.get("sources", [])
-                    
+
                     st.markdown(answer)
-                    
+
                     if sources:
                         with st.popover("📍 View Evidence"):
                             for i, s in enumerate(sources):
                                 st.markdown(f"**Snippet {i+1}:**\n{s[:250]}...")
-                    
+
                     st.session_state.messages.append({"role": "assistant", "content": answer})
-                else:
-                    st.error("Access Denied: Backend Unresponsive.")
+                elif response is not None:
+                    st.error(f"Request failed: {error_detail(response)}")

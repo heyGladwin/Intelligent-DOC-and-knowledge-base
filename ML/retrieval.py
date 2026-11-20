@@ -1,20 +1,23 @@
 """
-SHARED RETRIEVAL PIPELINE (framework-agnostic, no graph)
---------------------------------------------------------
+SHARED RETRIEVAL PIPELINE
+-------------------------
   1. DENSE search   (Gemini embedding, meaning)        -> top N chunks
   2. SPARSE search  (Pinecone sparse model, keywords)  -> top N chunks
-  3. RRF fusion     (merge both rankings by rank position)
+  +  GRAPH lookup   (Neo4j, linked chunks + facts)     -> optional third ranking
+  3. RRF fusion     (merge the rankings by rank position)
   4. RERANK         (bge-reranker-v2-m3 cross-encoder) -> best top_n chunks
   5. GENERATE       (Gemini answers from those chunks only)
 """
 
 import os
 import math
+import time
 from pinecone import Pinecone, ServerlessSpec
 from google import genai
 from ML import memory
 from ML.utils import generate_embeddings
 from ML import graph_store
+
 # ---------------- CONFIG ----------------
 INDEX_NAME = os.getenv("PINECONE_INDEX", "intelligent-doc-hybrid")
 NAMESPACE = "knowledge_base"
@@ -157,13 +160,12 @@ def retrieve(question):
     # 3. RRF + 4. Rerank
     fused = reciprocal_rank_fusion(rankings)
     top = rerank_chunks(question, fused[:RERANK_INPUT], FINAL_TOP_N)
-    return [m.metadata["content"] for m in top], graph_facts        
+    return [m.metadata["content"] for m in top], graph_facts
 
 
-import time
 def answer(question, user_id="default"):
     t0 = time.perf_counter()
-    chunks, graph_facts = retrieve(question)  # retrieve() now returns two values
+    chunks, graph_facts = retrieve(question)
     t1 = time.perf_counter()
     memories = memory.recall(index, user_id, question)
     t2 = time.perf_counter()
@@ -214,6 +216,8 @@ def answer(question, user_id="default"):
         "memories_used": memories,
         "graph_facts": graph_facts,
     }
+
+
 def index_chunks(filename, chunks):
     """Embed chunks (dense + sparse) and upsert them into Pinecone."""
     dense_vectors = generate_embeddings(chunks)  # RETRIEVAL_DOCUMENT by default
